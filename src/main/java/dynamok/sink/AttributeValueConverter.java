@@ -17,6 +17,7 @@
 package dynamok.sink;
 
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
+import network.path.kafka.connect.PathConstants;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
@@ -62,7 +63,11 @@ public class AttributeValueConverter {
             case BOOLEAN:
                 return new AttributeValue().withBOOL((boolean) value);
             case STRING:
-                return new AttributeValue().withS((String) value);
+                String str = (String) value;
+                if (str.length() == 0) {
+                    str = PathConstants.EMPTY_STRING_FOR_DYNAMO;
+                }
+                return new AttributeValue().withS(str);
             case BYTES:
                 return new AttributeValue().withB(toByteBuffer(value));
             case ARRAY: {
