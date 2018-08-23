@@ -19,14 +19,7 @@ package dynamok.sink;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient;
-import com.amazonaws.services.dynamodbv2.model.AmazonDynamoDBException;
-import com.amazonaws.services.dynamodbv2.model.AttributeValue;
-import com.amazonaws.services.dynamodbv2.model.BatchWriteItemRequest;
-import com.amazonaws.services.dynamodbv2.model.BatchWriteItemResult;
-import com.amazonaws.services.dynamodbv2.model.LimitExceededException;
-import com.amazonaws.services.dynamodbv2.model.ProvisionedThroughputExceededException;
-import com.amazonaws.services.dynamodbv2.model.PutRequest;
-import com.amazonaws.services.dynamodbv2.model.WriteRequest;
+import com.amazonaws.services.dynamodbv2.model.*;
 import dynamok.Version;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -39,12 +32,7 @@ import org.apache.kafka.connect.sink.SinkTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 
 public class DynamoDbSinkTask extends SinkTask {
@@ -101,7 +89,10 @@ public class DynamoDbSinkTask extends SinkTask {
             } else {
                 final Iterator<SinkRecord> recordIterator = records.iterator();
                 while (recordIterator.hasNext()) {
-                    final Map<String, List<WriteRequest>> writesByTable = toWritesByTable(recordIterator);
+                    final Map<String, List<WriteRequest>> writesByTable = (config.pathBatchDeduplicationPrimaryKey.length == 0
+                        ? toWritesByTableSimple(recordIterator)
+                        : toWritesByTableWithDeduplication(recordIterator)
+                    );
                     final BatchWriteItemResult batchWriteResponse = client.batchWriteItem(new BatchWriteItemRequest(writesByTable));
                     if (!batchWriteResponse.getUnprocessedItems().isEmpty()) {
                         throw new UnprocessedItemsException(batchWriteResponse.getUnprocessedItems());
@@ -126,7 +117,86 @@ public class DynamoDbSinkTask extends SinkTask {
         remainingRetries = config.maxRetries;
     }
 
-    private Map<String, List<WriteRequest>> toWritesByTable(Iterator<SinkRecord> recordIterator) {
+    private Map<String, AttributeValue> getPrimaryKeyMap(Map<String, AttributeValue> item) {
+
+        /*
+         *  For example for:
+         *
+         *    aggregated_results
+         *      PK: job_cust (String)
+         *      SK: wnd_dims (String)
+         *
+         *  ==>>
+         *
+         *    primaryKey.put("job_cust", item.get("job_cust"));
+         *    primaryKey.put("wnd_dims", item.get("wnd_dims"));
+         */
+
+        final Map<String, AttributeValue> primaryKey = new HashMap<>();
+        for (String pkPartKey : config.pathBatchDeduplicationPrimaryKey) {
+            final AttributeValue pkPartValue = item.get(pkPartKey);
+            if (pkPartValue == null) {
+                final String errorMessage =
+                        String.format("Deduplication primary key part undefined: %s; item = %s", pkPartKey, item);
+                throw new ConnectException(errorMessage);
+            }
+            primaryKey.put(pkPartKey, pkPartValue);
+        }
+        return primaryKey;
+    }
+
+    private Map<String, List<WriteRequest>> toWritesByTableWithDeduplication(Iterator<SinkRecord> recordIterator) {
+        final Map<String, List<WriteRequest>> writesByTable = new HashMap<>();
+
+        // Note: primaryKey -> index of element in the list for table
+        final Map<Map<String, AttributeValue>, WriteRequest> primaryKeysToWriteRequests = new HashMap<Map<String, AttributeValue>, WriteRequest>(config.batchSize);
+
+        for (int count = 0; recordIterator.hasNext() && count < config.batchSize; count++) {
+            final SinkRecord record = recordIterator.next();
+
+            final PutRequest putRequest = toPutRequest(record);
+            final Map<String, AttributeValue> item = putRequest.getItem();
+
+            if (log.isDebugEnabled()) {
+                log.debug(String.format("DynamoDbSinkTask item = %s", item));
+            }
+
+            final Map<String, AttributeValue> itemPrimaryKey = getPrimaryKeyMap(item);
+
+            if (log.isDebugEnabled()) {
+                log.debug(String.format("DynamoDbSinkTask itemPrimaryKey = %s", itemPrimaryKey));
+            }
+
+            final WriteRequest writeRequest = new WriteRequest(putRequest);
+            final String tableName = tableName(record);
+            final List<WriteRequest> writeRequestsForTable =
+                    writesByTable.computeIfAbsent(tableName, k -> new ArrayList<>(config.batchSize));
+
+            final WriteRequest existingSamePrimaryKeyWriteRequest = primaryKeysToWriteRequests.get(itemPrimaryKey);
+            if (log.isDebugEnabled()) {
+                log.debug(String.format("DynamoDbSinkTask existingSamePrimaryKeyWriteRequest = %s", existingSamePrimaryKeyWriteRequest));
+            }
+
+            if (existingSamePrimaryKeyWriteRequest != null) {
+                // Note: removing the "old" item with the same primary key
+                writeRequestsForTable.remove(existingSamePrimaryKeyWriteRequest);
+                primaryKeysToWriteRequests.remove(itemPrimaryKey);
+            }
+
+            writeRequestsForTable.add(writeRequest);
+
+            primaryKeysToWriteRequests.put(itemPrimaryKey, writeRequest);
+
+            if (log.isDebugEnabled()) {
+                log.debug(String.format("DynamoDbSinkTask primaryKeysToWriteRequests = %s", primaryKeysToWriteRequests));
+            }
+
+        }
+
+        return writesByTable;
+    }
+
+    private Map<String, List<WriteRequest>> toWritesByTableSimple(Iterator<SinkRecord> recordIterator) {
         final Map<String, List<WriteRequest>> writesByTable = new HashMap<>();
         for (int count = 0; recordIterator.hasNext() && count < config.batchSize; count++) {
             final SinkRecord record = recordIterator.next();

@@ -21,6 +21,8 @@ import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.types.Password;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.Iterator;
@@ -28,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 
 class ConnectorConfig extends AbstractConfig {
+
+    private final Logger log = LoggerFactory.getLogger(ConnectorConfig.class);
 
     private enum Keys {
         ;
@@ -37,6 +41,7 @@ class ConnectorConfig extends AbstractConfig {
         static final String TABLE_FORMAT = "table.format";
         static final String BATCH_SIZE = "batch.size";
         static final String KAFKA_ATTRIBUTES = "kafka.attributes";
+        static final String PATH_BATCH_DEDUPLICATION_PRIMARY_KEY = "path.batch.deduplication.pk";
         static final String IGNORE_RECORD_KEY = "ignore.record.key";
         static final String IGNORE_RECORD_VALUE = "ignore.record.value";
         static final String TOP_KEY_ATTRIBUTE = "top.key.attribute";
@@ -67,6 +72,10 @@ class ConnectorConfig extends AbstractConfig {
                     throw new ConfigException(Keys.KAFKA_ATTRIBUTES,
                             "Must be empty or contain exactly 3 attribute names mapping to the topic, partition and offset, but was: " + namesList);
             }, ConfigDef.Importance.HIGH, "Trio of ``topic,partition,offset`` attribute names to include in records, set to empty to omit these attributes.")
+            .define(Keys.PATH_BATCH_DEDUPLICATION_PRIMARY_KEY, ConfigDef.Type.LIST, "", (key, names) -> {
+                final List namesList = (List) names;
+                // Note: we allow empty as well as non-empty lists here;
+            }, ConfigDef.Importance.HIGH, "For example ``job_cust,wnd_dims`` for aggregated_job_results; set to empty to skip batch deduplication. Ignored if batchSize <= 1.")
             .define(Keys.IGNORE_RECORD_KEY, ConfigDef.Type.BOOLEAN, false,
                     ConfigDef.Importance.MEDIUM, "Whether to ignore Kafka record keys in preparing the DynamoDB record.")
             .define(Keys.IGNORE_RECORD_VALUE, ConfigDef.Type.BOOLEAN, false,
@@ -88,6 +97,7 @@ class ConnectorConfig extends AbstractConfig {
     final String tableFormat;
     final int batchSize;
     final KafkaCoordinateNames kafkaCoordinateNames;
+    final String[] pathBatchDeduplicationPrimaryKey;
     final boolean ignoreRecordKey;
     final boolean ignoreRecordValue;
     final String topKeyAttribute;
@@ -103,6 +113,11 @@ class ConnectorConfig extends AbstractConfig {
         tableFormat = getString(Keys.TABLE_FORMAT);
         batchSize = getInt(Keys.BATCH_SIZE);
         kafkaCoordinateNames = kafkaCoordinateNamesFromConfig(getList(Keys.KAFKA_ATTRIBUTES));
+
+        final List<String> deduplicationList = getList(Keys.PATH_BATCH_DEDUPLICATION_PRIMARY_KEY);
+        log.info(String.format("%s = %s", Keys.PATH_BATCH_DEDUPLICATION_PRIMARY_KEY, deduplicationList));
+        pathBatchDeduplicationPrimaryKey = deduplicationList.toArray(new String[0]);
+
         ignoreRecordKey = getBoolean(Keys.IGNORE_RECORD_KEY);
         ignoreRecordValue = getBoolean(Keys.IGNORE_RECORD_VALUE);
         topKeyAttribute = getString(Keys.TOP_KEY_ATTRIBUTE);
