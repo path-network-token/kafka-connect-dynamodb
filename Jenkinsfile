@@ -21,14 +21,9 @@ node {
                 sh "docker logout"
                 docker.withRegistry(dockerRegistry) {
                     def image = docker.build("${appName}:${packageVersion}", "--build-arg APP_VERSION=${packageVersion} .")
-                    try {
-                        sh "aws ecr get-login --no-include-email --region ${ecrRegion} | bash"
-                        image.push()
-                        image.push('latest')
-                    } finally {
-                        sh "docker inspect ${image.imageName()} -f '{{.Id}}' | xargs docker rmi -f"
-                        sh "docker image prune --force --filter label=stage=intermediate"
-                    }
+                    sh "aws ecr get-login --no-include-email --region ${ecrRegion} | bash"
+                    image.push()
+                    image.push('latest')
                 }
             }
         }
