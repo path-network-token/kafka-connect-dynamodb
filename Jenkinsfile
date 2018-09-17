@@ -8,6 +8,8 @@ node {
     def slackChannel = '#core-dev'
     def md5JobName = sh ( script: "echo '${gitBranch}${BUILD_NUMBER}' | md5sum - | head -c 6", returnStdout: true )
     def dockerProjectName = "kafka-dynamo-connect${md5JobName}"
+    def dockerRegistry = 'https://153323634045.dkr.ecr.us-west-2.amazonaws.com'
+    def ecrRegion = 'us-west-2'
 
     slackSend channel: "${slackChannel}", color: '#439FE0', message: "Starting ${env.JOB_NAME} - ${env.BUILD_NUMBER} - ${gitCommitMsg} (<${env.JOB_URL}|Open>)"
     currentBuild.displayName = "#${BUILD_NUMBER} - ${gitBranch}"
@@ -16,19 +18,17 @@ node {
         if (gitBranch == 'master') {
             stage('Publish release') {
                 println 'Building release Docker image...'
-                  def image = docker.build("pathnetwork/${appName}:${packageVersion}",
-                                           "--build-arg APP_VERSION=${packageVersion} .")
-                  try {
-                      withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', passwordVariable: 'DOCKERHUB_PASSWORD', usernameVariable: 'DOCKERHUB_USERNAME')]) {
-                        sh "docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PASSWORD}"
-                      }
-                      image.push()
-                      image.push('latest')
-                      slackSend channel: "${slackChannel}", color: '#439FE0', message: "Docker image pushed to Docker Hub ${env.JOB_NAME} - ${env.BUILD_NUMBER} - ${gitBranch} (<${env.JOB_URL}|Open>)"
-                  } finally {
-                      sh "docker inspect ${image.imageName()} -f '{{.Id}}' | xargs docker rmi -f"
-                      sh "docker image prune --force --filter label=stage=intermediate"
-                  }
+                docker.withRegistry(dockerRegistry) {
+                    def image = docker.build("${appName}:${packageVersion}", "--build-arg APP_VERSION=${packageVersion} .")
+                    try {
+                        sh "aws ecr get-login --no-include-email --region ${ecrRegion} | bash"
+                        image.push()
+                        image.push('latest')
+                    } finally {
+                        sh "docker inspect ${image.imageName()} -f '{{.Id}}' | xargs docker rmi -f"
+                        sh "docker image prune --force --filter label=stage=intermediate"
+                    }
+                }
             }
         }
     } catch (exc) {
