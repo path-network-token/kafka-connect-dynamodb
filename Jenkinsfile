@@ -20,7 +20,8 @@ node {
                 println 'Building release Docker image...'
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', passwordVariable: 'DOCKERHUB_PASSWORD', usernameVariable: 'DOCKERHUB_USERNAME')]) {
                     sh "docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PASSWORD}"
-                
+                    def base = docker.image('confluentinc/cp-kafka-connect')
+                    base.pull()
                     docker.withRegistry(dockerRegistry) {
                         def image = docker.build("${appName}:${packageVersion}", "--build-arg APP_VERSION=${packageVersion} .")
                         try {
