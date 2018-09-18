@@ -2,6 +2,8 @@ node {
     def scmVars = checkout scm
 
     def appName = 'kafka-dynamo-connect'
+    def appNameDev = 'kafka-dynamo-connect'
+
     def gitBranch = scmVars.GIT_BRANCH.replace('origin/', '')
     def gitCommitMsg = sh(script: 'git show -s --format=%B --oneline HEAD', returnStdout: true).trim()
     def packageVersion = "1.0.${BUILD_NUMBER}"
@@ -18,15 +20,36 @@ node {
         if (gitBranch == 'master') {
             stage('Publish release') {
                 println 'Building release Docker image...'
-                sh "docker logout"
+                #sh "docker logout"
                 docker.withRegistry(dockerRegistry) {
                     def image = docker.build("${appName}:${packageVersion}", "--build-arg APP_VERSION=${packageVersion} .")
-                    sh "aws ecr get-login --no-include-email --region ${ecrRegion} | bash"
-                    image.push()
-                    image.push('latest')
+                    try {
+                        sh "aws ecr get-login --no-include-email --region ${ecrRegion} | bash"
+                        image.push()
+                        image.push('latest')
+                    } finally {
+                        sh "docker inspect ${image.imageName()} -f '{{.Id}}' | xargs docker rmi -f"
+                        sh "docker image prune --force --filter label=stage=intermediate"
+                    }
                 }
             }
         }
+        else if (gitBranch == 'develop') {
+            stage('Publish non-prod release') {
+                println 'Building Docker image...'
+                docker.withRegistry(dockerRegistry) {
+                    def image = docker.build("${appNameDev}:${packageVersion}", "--build-arg APP_VERSION=${packageVersion} .")
+                    try {
+                        sh "aws ecr get-login --no-include-email --region ${ecrRegion} | bash"
+                        image.push()
+                        image.push('latest')
+                    } finally {
+                        sh "docker inspect ${image.imageName()} -f '{{.Id}}' | xargs docker rmi -f"
+                        sh "docker image prune --force --filter label=stage=intermediate"
+                    }
+                }
+            }
+        }        
     } catch (exc) {
         slackSend channel: "${slackChannel}", color: '#FF0000', message: "${env.STAGE_NAME} failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER} - ${gitBranch} (<${env.JOB_URL}|Open>)"
         currentBuild.result = 'FAILURE'
