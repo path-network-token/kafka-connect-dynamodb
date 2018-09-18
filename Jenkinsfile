@@ -2,7 +2,7 @@ node {
     def scmVars = checkout scm
 
     def appName = 'kafka-dynamo-connect'
-    def appNameDev = 'kafka-dynamo-connect'
+    def appNameDev = 'kafka-dynamo-connect-dev'
 
     def gitBranch = scmVars.GIT_BRANCH.replace('origin/', '')
     def gitCommitMsg = sh(script: 'git show -s --format=%B --oneline HEAD', returnStdout: true).trim()
@@ -20,7 +20,6 @@ node {
         if (gitBranch == 'master') {
             stage('Publish release') {
                 println 'Building release Docker image...'
-                #sh "docker logout"
                 docker.withRegistry(dockerRegistry) {
                     def image = docker.build("${appName}:${packageVersion}", "--build-arg APP_VERSION=${packageVersion} .")
                     try {
